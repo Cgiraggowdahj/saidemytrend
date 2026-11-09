@@ -1,31 +1,68 @@
-pipeline {                                      // 1 // Defines the start of the Jenkins pipeline block
-    agent any                                  // Specifies the pipeline can run on any available agent
 
-    environment {                              // 2 // Defines environment variables for the pipeline
-        PATH = "/opt/maven/bin:$PATH"          // Adds Maven's path to the system's PATH variable
-    }                                          // 2 // Ends the environment block
+pipeline {
+    agent any
 
-    stages {                                   // 3 // Defines the stages block where multiple stages are declared
+    environment {
+        PATH = "/opt/maven/bin:$PATH"
+    }
 
-        stage("build") {                       // 4 // Creates a stage named 'build'
-            steps {                             // 5 // Defines the steps that will be executed in this stage
-                sh 'mvn clean deploy'           // Runs the Maven clean and deploy command to build the project
-            }                                  // 5 // Ends the steps block for 'build' stage
-        }                                      // 4 // Ends the 'build' stage
+    stages {
+        stage("Build") {
+            steps {
+                echo '------------ build started ------------'
+                sh 'mvn clean deploy -Dmaven.test.skip=true'
+                echo '------------ build completed ------------'
+            }
+        }
 
-        stage('SonarQube analysis') {          // 6 // Creates a stage named 'SonarQube analysis'
-            environment {                      // 7 // Defines environment variables specific to this stage
-                scannerHome = tool 'scanner'
-                                                 // Sets the SonarQube scanner tool
-            }                                  // 7 // Ends the environment block for this stage
+        stage("test") {
+            steps {
+                echo '------------ unit test started ------------'
+                sh 'mvn surefire-report:report'
+                echo '------------ unit test completed ------------'
+            }
+        }
 
-            steps {                             // 8 // Defines the steps that will be executed in this stage
-                withSonarQubeEnv('server') {
-                                                 // Executes the SonarQube analysis within the SonarQube environment
+        stage('SonarQube analysis') {
+            environment {
+                scannerHome = tool 'sonar-scanner'
+            }
+
+            steps {
+                withSonarQubeEnv('sonarqube-server') {
                     sh "${scannerHome}/bin/sonar-scanner"
-                                                 // Runs the SonarQube scanner tool
-                }                              // Ends the withSonarQubeEnv block
-            }                                  // 8 // Ends the steps block for 'SonarQube analysis' stage
-        }                                      // 6 // Ends the 'SonarQube analysis' stage
-    }                                          // 3 // Ends the stages block
-}                                              // 1 // Ends the pipeline blocki
+                }
+            }
+        }
+
+        stage("Jar Publish") {
+            steps {
+                script {
+                    echo '<------------ Jar Publish Started ------------>'
+
+                    def server = Artifactory.newServer url: 'artifactory', credentialsId: 'artifact-cred'
+
+                    def properties = "BuildId=${env.BUILD_ID}, commitId=${GIT_COMMIT}"
+
+                    def uploadSpec = """{
+                        "files": [
+                            {
+                                "pattern": "jarstaging/(*)",
+                                "target": "si-release-local/{1}",
+                                "flat": "false",
+                                "props": "${properties}",
+                                "exclusions": ["*.sha1", "*.md5"]
+                            }
+                        ]
+                    }"""
+
+                    def buildInfo = server.upload(uploadSpec)
+                    buildInfo.env.collect()
+                    server.publishBuildInfo(buildInfo)
+
+                    echo '<------------ Jar Publish Ended ------------>'
+                }
+            }
+        }
+    }
+}
